@@ -1,0 +1,13 @@
+﻿# Keep the build context small.
+rag_env/
+llmfinetune/env/
+backend/__pycache__/
+backend/uploads/
+.git/
+.gitignore
+*.pyc
+*.pyo
+*.log
+.env
+
+

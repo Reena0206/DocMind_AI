@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>DocMind AI — Chat with your Documents</title>
+  <meta name="description" content="DocMind AI: Upload documents, ask questions, and get AI-powered answers with source citations."/>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans:    ['Inter', 'system-ui', 'sans-serif'],
+            display: ['Outfit', 'system-ui', 'sans-serif'],
+          },
+          colors: {
+            night:  { DEFAULT:'#06090f', 50:'#0b1120', 100:'#0f1629', 200:'#131d36' },
+            ink:    { DEFAULT:'#1e2942', 50:'#253050', 100:'#2d3b60', 200:'#364473' },
+            iris:   { DEFAULT:'#6366f1', light:'#818cf8', dark:'#4f46e5', glow:'rgba(99,102,241,0.3)' },
+            sky:    { DEFAULT:'#22d3ee', soft:'rgba(34,211,238,0.12)' },
+            jade:   { DEFAULT:'#10b981', soft:'rgba(16,185,129,0.12)' },
+            rose:   { DEFAULT:'#f43f5e', soft:'rgba(244,63,94,0.12)' },
+            honey:  { DEFAULT:'#f59e0b', soft:'rgba(245,158,11,0.12)' },
+          },
+          boxShadow: {
+            'iris': '0 0 0 1px rgba(99,102,241,0.3), 0 8px 32px rgba(99,102,241,0.2)',
+            'card': '0 4px 24px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.04)',
+            'xl2': '0 24px 64px rgba(0,0,0,0.6)',
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700;800;900&display=swap" rel="stylesheet"/>
+  <style>
+    /* scrollbar */
+    *{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,0.08) transparent}
+    ::-webkit-scrollbar{width:3px;height:3px}
+    ::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:99px}
+
+    /* gradient text util */
+    .g-text{background:linear-gradient(135deg,#fff 30%,#94a3b8);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+    .g-iris{background:linear-gradient(135deg,#818cf8,#6366f1);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+
+    /* button gradient */
+    .btn-iris{background:linear-gradient(135deg,#6366f1,#4f46e5);box-shadow:0 2px 16px rgba(99,102,241,0.35)}
+    .btn-iris:hover{background:linear-gradient(135deg,#818cf8,#6366f1);box-shadow:0 4px 24px rgba(99,102,241,0.5)}
+
+    /* animated orbs */
+    .orb{position:absolute;border-radius:50%;filter:blur(80px);pointer-events:none;opacity:.6}
+    .orb-1{width:480px;height:480px;background:radial-gradient(circle,rgba(99,102,241,.28),transparent 65%);top:-15%;left:-15%;animation:drift1 14s ease-in-out infinite alternate}
+    .orb-2{width:380px;height:380px;background:radial-gradient(circle,rgba(34,211,238,.18),transparent 65%);bottom:-15%;right:-15%;animation:drift2 14s ease-in-out infinite alternate}
+    .orb-3{width:280px;height:280px;background:radial-gradient(circle,rgba(99,102,241,.12),transparent 65%);top:40%;right:20%;animation:drift1 18s ease-in-out infinite alternate-reverse}
+    @keyframes drift1{from{transform:translate(0,0) scale(1)}to{transform:translate(50px,30px) scale(1.12)}}
+    @keyframes drift2{from{transform:translate(0,0) scale(1)}to{transform:translate(-40px,-28px) scale(1.1)}}
+
+    /* card entrance */
+    .anim-in{animation:anim-in .5s cubic-bezier(.34,1.56,.64,1) both}
+    @keyframes anim-in{from{opacity:0;transform:translateY(28px) scale(.94)}to{opacity:1;transform:translateY(0) scale(1)}}
+
+    /* message entrance */
+    .msg-in{animation:msg-in .28s ease both}
+    @keyframes msg-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+
+    /* typing dots */
+    .td{width:6px;height:6px;border-radius:50%;animation:td 1.2s ease-in-out infinite}
+    .td1{background:#6366f1;animation-delay:0s}
+    .td2{background:#22d3ee;animation-delay:.18s}
+    .td3{background:#818cf8;animation-delay:.36s}
+    @keyframes td{0%,80%,100%{transform:scale(.55);opacity:.4}40%{transform:scale(1);opacity:1}}
+
+    /* grid bg */
+    .grid-bg{background-image:linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px);background-size:28px 28px}
+
+    /* iris glow on focus-within */
+    .input-glow:focus-within{border-color:#6366f1!important;box-shadow:0 0 0 3px rgba(99,102,241,.18)}
+
+    /* sidebar active item */
+    .conv-active{background:rgba(99,102,241,.12);border-color:rgba(99,102,241,.25)!important;color:#c7d2fe}
+    .conv-item:hover .del-btn{opacity:.5}
+    .del-btn:hover{opacity:1!important;color:#f43f5e}
+
+    /* user bubble */
+    .u-bubble{background:linear-gradient(135deg,rgba(99,102,241,.2),rgba(79,70,229,.14));border:1px solid rgba(99,102,241,.25)}
+    /* ai bubble */
+    .a-bubble{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08)}
+
+    /* source card left-bar */
+    .src-card{border-left:2px solid #6366f1;background:rgba(99,102,241,.04);border-top:1px solid rgba(255,255,255,.06);border-right:1px solid rgba(255,255,255,.06);border-bottom:1px solid rgba(255,255,255,.06)}
+
+    /* sidebar collapse transition */
+    aside {
+      transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s, border-color 0.3s;
+    }
+    aside.collapsed {
+      width: 0 !important;
+      min-width: 0 !important;
+      max-width: 0 !important;
+      opacity: 0 !important;
+      border-right-width: 0 !important;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body class="bg-night-50 text-slate-200 font-sans h-screen overflow-hidden flex antialiased select-none">
+
+{% include 'components/auth_screen.html' %}
+
+<!-- ══════════════════════════ APP LAYOUT ═══════════════════════════ -->
+<div id="app-layout" class="hidden w-full h-full">
+
+  {% include 'components/sidebar.html' %}
+
+  {% include 'components/chat_area.html' %}
+
+</div>
+
+{% include 'components/scripts.html' %}
+
+</body>
+</html>

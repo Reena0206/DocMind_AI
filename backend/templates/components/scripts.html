@@ -1,0 +1,616 @@
+﻿<script>
+/*
+  Frontend controller for the DocMind AI dashboard.
+  The HTML template already provides the shell, and this file wires up:
+  - auth/register flow
+  - sidebar state
+  - uploads and file selection
+  - chat streaming, cancel, and history reload
+*/
+
+const API_URL = ""; // Same-origin API calls keep local and deployed builds identical.
+
+// Lightweight app state keeps the DOM updates predictable.
+let isRegisterMode = false;
+let currentConversationId = null;
+let selectedFiles = [];
+let isStreaming = false;
+let abortController = null;
+let assistantDraftBody = null;
+
+const el = {
+  authScreen: document.getElementById("auth-screen"),
+  appLayout: document.getElementById("app-layout"),
+  authTitle: document.getElementById("auth-title"),
+  authSubtitle: document.getElementById("auth-subtitle"),
+  authToggleText: document.getElementById("auth-toggle-text"),
+  authToggleLink: document.getElementById("auth-toggle-link"),
+  authForm: document.getElementById("auth-form"),
+  authUser: document.getElementById("auth-username"),
+  authPass: document.getElementById("auth-password"),
+  authErr: document.getElementById("auth-err"),
+  authBtn: document.getElementById("auth-submit-btn"),
+  userLetter: document.getElementById("user-avatar-letter"),
+  profileUser: document.getElementById("profile-username"),
+  statusDot: document.getElementById("status-dot"),
+  statusText: document.getElementById("status-text"),
+  modelBadge: document.getElementById("model-badge"),
+  hdrStatusDot: document.getElementById("hdr-status-dot"),
+  hdrStatusText: document.getElementById("hdr-status-text"),
+  convList: document.getElementById("conv-list"),
+  docList: document.getElementById("doc-list"),
+  statsCount: document.getElementById("stats-count"),
+  progressBox: document.getElementById("progress-box"),
+  progressMsg: document.getElementById("progress-msg"),
+  messagesArea: document.getElementById("messages-area"),
+  infoMsg: document.getElementById("info-msg"),
+  chatForm: document.getElementById("chat-form"),
+  chatInput: document.getElementById("chat-input"),
+  sendBtn: document.getElementById("send-btn"),
+  sendIcon: document.getElementById("send-icon"),
+  fileInput: document.getElementById("file-input"),
+  sidebar: document.getElementById("sidebar"),
+};
+
+// Expose the handlers used by inline onclick / onsubmit attributes.
+window.toggleAuthMode = toggleAuthMode;
+window.handleAuth = handleAuth;
+window.logout = logout;
+window.toggleSidebar = toggleSidebar;
+window.startNewChat = startNewChat;
+window.clearMemory = clearMemory;
+window.sendMessage = sendMessage;
+
+function escapeHtml(value) {
+  const div = document.createElement("div");
+  div.textContent = value ?? "";
+  return div.innerHTML;
+}
+
+function setStatus(text, online) {
+  el.statusText.textContent = text;
+  el.hdrStatusText.textContent = text;
+  const color = online ? "bg-jade" : "bg-rose";
+  el.statusDot.className = `w-1.5 h-1.5 rounded-full transition-all ${color}`;
+  el.hdrStatusDot.className = `w-1.5 h-1.5 rounded-full transition-all ${color}`;
+}
+
+function setProfile(user) {
+  el.profileUser.textContent = user.username;
+  el.userLetter.textContent = (user.username || "U").slice(0, 1).toUpperCase();
+}
+
+function setAuthMode(register) {
+  isRegisterMode = register;
+  el.authTitle.textContent = register ? "Create your account" : "Welcome back";
+  el.authSubtitle.textContent = register ? "Register to start your workspace" : "Sign in to continue to your workspace";
+  el.authToggleText.textContent = register ? "Already have an account?" : "Don't have an account?";
+  el.authToggleLink.textContent = register ? "Sign In" : "Register";
+  el.authBtn.textContent = register ? "Register" : "Sign In";
+}
+
+function toggleAuthMode() {
+  setAuthMode(!isRegisterMode);
+}
+
+async function apiFetch(path, options = {}) {
+  const headers = { ...(options.headers || {}) };
+  if (!(options.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+  const response = await fetch(`${API_URL}${path}`, {
+    credentials: "include",
+    headers,
+    ...options,
+  });
+  return response;
+}
+
+async function apiJson(path, options = {}) {
+  const response = await apiFetch(path, options);
+  const text = await response.text();
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { raw: text };
+    }
+  }
+  if (!response.ok) {
+    throw new Error(payload.error || payload.raw || `Request failed (${response.status})`);
+  }
+  return payload;
+}
+
+function showApp() {
+  el.authScreen.classList.add("hidden");
+  el.appLayout.classList.remove("hidden");
+}
+
+function showAuth() {
+  el.appLayout.classList.add("hidden");
+  el.authScreen.classList.remove("hidden");
+}
+
+function setComposerEnabled(enabled) {
+  el.chatInput.disabled = !enabled;
+  el.sendBtn.disabled = !enabled;
+}
+
+function syncComposerState() {
+  // The composer only unlocks once at least one document is selected.
+  setComposerEnabled(selectedFiles.length > 0);
+}
+
+function setEmptyStateVisible(visible) {
+  el.infoMsg.classList.toggle("hidden", !visible);
+}
+
+function clearFeed() {
+  // Keep the built-in empty state node and remove only dynamic messages.
+  Array.from(el.messagesArea.children).forEach((child) => {
+    if (child !== el.infoMsg) child.remove();
+  });
+  setEmptyStateVisible(true);
+}
+
+function scrollFeedToBottom() {
+  el.messagesArea.scrollTop = el.messagesArea.scrollHeight;
+}
+
+function createBubble(role, text = "") {
+  const row = document.createElement("div");
+  row.className = `flex items-start gap-3 msg-in select-text ${role === "human" ? "justify-end" : "justify-start"}`;
+
+  if (role === "human") {
+    row.innerHTML = `
+      <div class="max-w-[72%] u-bubble rounded-2xl rounded-tr-md px-4 py-3 text-sm text-slate-100 shadow-card select-text">
+        <div class="bubble-body whitespace-pre-wrap leading-relaxed"></div>
+      </div>
+      <div class="w-9 h-9 rounded-full btn-iris flex items-center justify-center flex-shrink-0 shadow-iris text-white">
+        <svg class="w-4 h-4 fill-none stroke-current stroke-[1.8]" viewBox="0 0 24 24"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="8" r="4"/></svg>
+      </div>
+    `;
+  } else {
+    row.innerHTML = `
+      <div class="w-9 h-9 rounded-full bg-night-200/80 border border-white/[0.06] flex items-center justify-center flex-shrink-0 text-iris-light">
+        <svg class="w-4 h-4 fill-none stroke-current stroke-[1.8]" viewBox="0 0 24 24"><path d="M9.5 2a4 4 0 0 1 4 3.5A4 4 0 0 1 17 9c.83 0 1.5.67 1.5 1.5S17.83 12 17 12a4 4 0 0 1-3.5 3.5V17a2.5 2.5 0 0 1-5 0v-1.5A4 4 0 0 1 5 12c-.83 0-1.5-.67-1.5-1.5S4.17 9 5 9a4 4 0 0 1 3.5-3.5A4 4 0 0 1 9.5 2z"/></svg>
+      </div>
+      <div class="max-w-[72%] a-bubble rounded-2xl rounded-tl-md px-4 py-3 text-sm text-slate-200 shadow-card select-text">
+        <div class="bubble-body whitespace-pre-wrap leading-relaxed"></div>
+        <div class="sources mt-3 hidden"></div>
+      </div>
+    `;
+  }
+
+  const body = row.querySelector(".bubble-body");
+  body.textContent = text;
+  return row;
+}
+
+function appendMessage(role, text) {
+  setEmptyStateVisible(false);
+  const bubble = createBubble(role, text);
+  el.messagesArea.appendChild(bubble);
+  scrollFeedToBottom();
+  return bubble.querySelector(".bubble-body");
+}
+
+function appendSources(bubbleBody, sources = []) {
+  if (!sources.length) return;
+  const sourcesBox = bubbleBody.parentElement.querySelector(".sources");
+  sourcesBox.classList.remove("hidden");
+  sourcesBox.innerHTML = sources
+    .map(
+      (source) => `
+        <span class="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full bg-white/[0.04] border border-white/[0.06] text-slate-400 mr-1 mb-1">
+          <span class="w-1.5 h-1.5 rounded-full bg-iris-light"></span>
+          ${escapeHtml(source)}
+        </span>
+      `,
+    )
+    .join("");
+}
+
+function renderConversations(conversations) {
+  if (!conversations.length) {
+    el.convList.innerHTML = '<p class="text-[11.5px] text-slate-600 text-center py-3">No conversations yet</p>';
+    return;
+  }
+
+  el.convList.innerHTML = conversations
+    .map((conversation) => {
+      const active = conversation.id === currentConversationId ? "conv-active" : "";
+      return `
+        <div class="conv-item group flex items-center gap-2 rounded-xl border border-transparent px-3 py-2 cursor-pointer transition-all ${active}" data-conv-id="${conversation.id}">
+          <button class="flex-1 min-w-0 text-left" type="button" data-action="open-conversation">
+            <div class="text-[12px] font-semibold text-slate-200 truncate">${escapeHtml(conversation.title || "New Chat")}</div>
+            <div class="text-[10px] text-slate-600">${escapeHtml((conversation.created_at || "").slice(0, 16))}</div>
+          </button>
+          <button class="del-btn opacity-0 transition-all text-slate-600 hover:text-rose" type="button" data-action="delete-conversation" title="Delete chat">
+            <svg class="w-3.5 h-3.5 fill-none stroke-current stroke-2" viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+          </button>
+        </div>
+      `;
+    })
+    .join("");
+
+  el.convList.querySelectorAll("[data-action='open-conversation']").forEach((button) => {
+    button.addEventListener("click", () => loadConversation(Number(button.closest("[data-conv-id]").dataset.convId)));
+  });
+
+  el.convList.querySelectorAll("[data-action='delete-conversation']").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const item = button.closest("[data-conv-id]");
+      if (!item) return;
+      const conversationId = Number(item.dataset.convId);
+      if (!confirm("Delete this conversation?")) return;
+      await deleteConversation(conversationId);
+    });
+  });
+}
+
+function renderFiles(files) {
+  if (!files.length) {
+    el.docList.innerHTML = '<p class="text-[11.5px] text-slate-600">No files uploaded yet.</p>';
+    selectedFiles = [];
+    updateSelectionStats();
+    syncComposerState();
+    return;
+  }
+
+  const previouslySelected = new Set(selectedFiles);
+  if (!previouslySelected.size) {
+    // When the workspace first loads, select every available file by default.
+    selectedFiles = files.map((file) => file.filename);
+  } else {
+    selectedFiles = files.filter((file) => previouslySelected.has(file.filename)).map((file) => file.filename);
+  }
+
+  el.docList.innerHTML = files
+    .map(
+      (file) => `
+        <label class="flex items-center gap-2 rounded-xl px-2.5 py-2 hover:bg-white/[0.03] cursor-pointer">
+          <input type="checkbox" class="doc-check w-4 h-4 accent-iris" data-filename="${escapeHtml(file.filename)}" ${selectedFiles.includes(file.filename) ? "checked" : ""} />
+          <div class="min-w-0 flex-1">
+            <div class="text-[12px] font-medium text-slate-200 truncate">${escapeHtml(file.filename)}</div>
+            <div class="text-[10px] text-slate-600">Uploaded ${escapeHtml((file.created_at || "").slice(0, 16))}</div>
+          </div>
+        </label>
+      `,
+    )
+    .join("");
+
+  el.docList.querySelectorAll(".doc-check").forEach((checkbox) => {
+    checkbox.addEventListener("change", () => {
+      const name = checkbox.dataset.filename;
+      if (checkbox.checked) {
+        if (!selectedFiles.includes(name)) selectedFiles.push(name);
+      } else {
+        selectedFiles = selectedFiles.filter((entry) => entry !== name);
+      }
+      updateSelectionStats();
+      syncComposerState();
+    });
+  });
+
+  updateSelectionStats();
+  syncComposerState();
+}
+
+function updateSelectionStats() {
+  el.statsCount.textContent = `${selectedFiles.length} selected`;
+}
+
+async function loadCurrentUser() {
+  try {
+    const payload = await apiJson("/user");
+    setProfile(payload.user);
+    setStatus("Online", true);
+    showApp();
+    return payload.user;
+  } catch {
+    setStatus("Offline", false);
+    showAuth();
+    return null;
+  }
+}
+
+async function loadDashboard() {
+  const [health, conversationsPayload, filesPayload] = await Promise.all([
+    apiJson("/health").catch(() => null),
+    apiJson("/conversations").catch(() => ({ conversations: [] })),
+    apiJson("/files").catch(() => ({ files: [] })),
+  ]);
+
+  if (health) {
+    el.modelBadge.textContent = health.llm_model || "—";
+    setStatus(`Online · ${health.llm_provider}`, true);
+  }
+
+  renderConversations(conversationsPayload.conversations || []);
+  renderFiles(filesPayload.files || []);
+
+  if (!currentConversationId && (conversationsPayload.conversations || []).length) {
+    await loadConversation(conversationsPayload.conversations[0].id, { silent: true });
+  } else if (!currentConversationId) {
+    clearFeed();
+  }
+}
+
+async function bootstrap() {
+  setAuthMode(false);
+  const user = await loadCurrentUser();
+  if (user) {
+    await loadDashboard();
+  }
+}
+
+async function handleAuth(event) {
+  event.preventDefault();
+  el.authErr.textContent = "";
+  el.authBtn.disabled = true;
+
+  try {
+    const payload = await apiJson("/auth", {
+      method: "POST",
+      body: JSON.stringify({
+        username: el.authUser.value.trim(),
+        password: el.authPass.value,
+        mode: isRegisterMode ? "register" : "login",
+      }),
+    });
+
+    setProfile(payload.user);
+    showApp();
+    await loadDashboard();
+  } catch (error) {
+    el.authErr.textContent = error.message;
+  } finally {
+    el.authBtn.disabled = false;
+  }
+}
+
+async function logout() {
+  await apiJson("/logout", { method: "POST", body: "{}" }).catch(() => null);
+  currentConversationId = null;
+  selectedFiles = [];
+  clearFeed();
+  renderConversations([]);
+  renderFiles([]);
+  setComposerEnabled(false);
+  showAuth();
+}
+
+function toggleSidebar() {
+  // Collapsing the sidebar helps on narrower screens without changing layout markup.
+  el.sidebar.classList.toggle("collapsed");
+}
+
+async function loadConversation(conversationId, options = {}) {
+  currentConversationId = conversationId;
+  const payload = await apiJson(`/conversations/${conversationId}/messages`).catch(() => ({ messages: [] }));
+  clearFeed();
+
+  const messages = payload.messages || [];
+  if (!messages.length) {
+    if (!options.silent) renderConversations((await apiJson("/conversations").catch(() => ({ conversations: [] }))).conversations || []);
+    return;
+  }
+
+  setEmptyStateVisible(false);
+  messages.forEach((message) => {
+    const body = appendMessage(message.role === "human" ? "human" : "ai", message.content);
+    if (message.role !== "human") {
+      appendSources(body, []);
+    }
+  });
+  renderConversations((await apiJson("/conversations").catch(() => ({ conversations: [] }))).conversations || []);
+}
+
+async function deleteConversation(conversationId) {
+  // The backend currently has a simple conversation model, so deleting is done directly in SQL.
+  await apiJson(`/conversations/${conversationId}`, { method: "DELETE", body: "{}" }).catch(() => null);
+  const payload = await apiJson("/conversations").catch(() => ({ conversations: [] }));
+  renderConversations(payload.conversations || []);
+  if (currentConversationId === conversationId) {
+    currentConversationId = null;
+    clearFeed();
+  }
+}
+
+async function startNewChat() {
+  const payload = await apiJson("/conversations", { method: "POST", body: "{}" });
+  currentConversationId = payload.conversation.id;
+  renderConversations((await apiJson("/conversations").catch(() => ({ conversations: [] }))).conversations || []);
+  clearFeed();
+  return currentConversationId;
+}
+
+async function clearMemory() {
+  await apiJson("/memory/clear", { method: "POST", body: "{}" }).catch(() => null);
+  await startNewChat();
+}
+
+async function uploadFiles(fileList) {
+  if (!fileList.length) return;
+
+  el.progressBox.classList.remove("hidden");
+  el.progressMsg.textContent = "Uploading...";
+
+  try {
+    const formData = new FormData();
+    Array.from(fileList).forEach((file) => formData.append("files", file));
+    const response = await fetch(`${API_URL}/upload`, {
+      method: "POST",
+      credentials: "include",
+      body: formData,
+    });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || "Upload failed.");
+
+    const filesPayload = await apiJson("/files").catch(() => ({ files: [] }));
+    renderFiles(filesPayload.files || []);
+    renderConversations((await apiJson("/conversations").catch(() => ({ conversations: [] }))).conversations || []);
+  } catch (error) {
+    el.progressMsg.textContent = error.message;
+  } finally {
+    setTimeout(() => {
+      el.progressBox.classList.add("hidden");
+    }, 900);
+  }
+}
+
+function parseStreamFrame(frame) {
+  const lines = frame.split("\n");
+  const dataLines = lines.filter((line) => line.startsWith("data:"));
+  if (!dataLines.length) return null;
+  const jsonText = dataLines.map((line) => line.replace(/^data:\s?/, "")).join("\n");
+  try {
+    return JSON.parse(jsonText);
+  } catch {
+    return null;
+  }
+}
+
+async function streamChatRequest(payload) {
+  abortController = new AbortController();
+  const response = await fetch(`${API_URL}/chat/stream`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: abortController.signal,
+  });
+
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => ({}));
+    throw new Error(errorPayload.error || `Chat request failed (${response.status})`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const message = parseStreamFrame(frame);
+      if (message) {
+        handleStreamMessage(message);
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+}
+
+function handleStreamMessage(message) {
+  if (!assistantDraftBody) return;
+
+  if (message.type === "token") {
+    assistantDraftBody.textContent += message.delta || "";
+    scrollFeedToBottom();
+    return;
+  }
+
+  if (message.type === "done") {
+    assistantDraftBody.textContent = message.text || assistantDraftBody.textContent;
+    appendSources(assistantDraftBody, message.sources || []);
+    isStreaming = false;
+    assistantDraftBody = null;
+    setComposerEnabled(selectedFiles.length > 0);
+    loadDashboard().catch(() => null);
+    return;
+  }
+
+  if (message.type === "error") {
+    assistantDraftBody.textContent = message.error || "Error";
+    isStreaming = false;
+    assistantDraftBody = null;
+    setComposerEnabled(selectedFiles.length > 0);
+    return;
+  }
+
+  if (message.type === "canceled") {
+    assistantDraftBody.textContent = "Canceled";
+    isStreaming = false;
+    assistantDraftBody = null;
+    setComposerEnabled(selectedFiles.length > 0);
+  }
+}
+
+async function sendMessage(event) {
+  event.preventDefault();
+
+  if (isStreaming) {
+    // A second click while streaming cancels the active request.
+    if (abortController) abortController.abort();
+    if (assistantDraftBody) assistantDraftBody.textContent = "Canceled";
+    isStreaming = false;
+    assistantDraftBody = null;
+    setComposerEnabled(selectedFiles.length > 0);
+    return;
+  }
+
+  const message = el.chatInput.value.trim();
+  if (!message) return;
+  if (!selectedFiles.length) {
+    el.progressBox.classList.remove("hidden");
+    el.progressMsg.textContent = "Select at least one document first.";
+    setTimeout(() => el.progressBox.classList.add("hidden"), 1300);
+    return;
+  }
+
+  if (!currentConversationId) {
+    await startNewChat();
+  }
+
+  appendMessage("human", message);
+  el.chatInput.value = "";
+  assistantDraftBody = appendMessage("ai", "");
+  isStreaming = true;
+  setComposerEnabled(true);
+
+  try {
+    await streamChatRequest({
+      conversation_id: currentConversationId,
+      message,
+      files: selectedFiles,
+    });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      assistantDraftBody.textContent = "Canceled";
+    } else if (assistantDraftBody) {
+      assistantDraftBody.textContent = error.message;
+    }
+  } finally {
+    isStreaming = false;
+    assistantDraftBody = null;
+    abortController = null;
+    syncComposerState();
+    loadDashboard().catch(() => null);
+  }
+}
+
+// File picker and upload zone wiring live here so the template stays simple.
+el.fileInput.addEventListener("change", (event) => uploadFiles(event.target.files));
+el.chatInput.addEventListener("input", () => {
+  // Allow the selected file list to control whether chat is enabled.
+  syncComposerState();
+});
+
+
+bootstrap().catch((error) => {
+  console.error(error);
+  setStatus("Offline", false);
+});
+</script>
+

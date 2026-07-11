@@ -1,0 +1,39 @@
+# Virtual environments (Python)
+rag_env/
+llmfinetune/env/
+env/
+venv/
+ENV/
+
+# Python compiled cache
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Local environment secrets and database credentials
+backend/.env
+.env
+.env.local
+.env.*.local
+
+# Large models, model weights and fine-tune checkpoints
+llmfinetune/model/
+models/
+*.bin
+*.pt
+*.pth
+*.gguf
+
+# Temporary upload files
+uploads/
+temp/
+C:/rag_uploads/
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
