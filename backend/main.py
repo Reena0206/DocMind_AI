@@ -405,7 +405,7 @@ def upload():
         storage.save(str(save_path))
 
         try:
-            ingest_summary = ingest_file(str(save_path))
+            ingest_summary = ingest_file(str(save_path), safe_name)
             with db_cursor() as cur:
                 cur.execute(
                     """

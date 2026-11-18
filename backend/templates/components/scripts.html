@@ -126,10 +126,12 @@ async function apiJson(path, options = {}) {
 function showApp() {
   el.authScreen.classList.add("hidden");
   el.appLayout.classList.remove("hidden");
+  el.appLayout.classList.add("flex");
 }
 
 function showAuth() {
   el.appLayout.classList.add("hidden");
+  el.appLayout.classList.remove("flex");
   el.authScreen.classList.remove("hidden");
 }
 

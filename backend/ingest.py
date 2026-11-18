@@ -119,7 +119,7 @@ def extract_text_ocr(pdf_path: str) -> str:
 
 
 # â”€â”€ Loader â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-def load_document(file_path: str) -> List[Document]:
+def load_document(file_path: str, display_name: str | None = None) -> List[Document]:
     path = Path(file_path)
     ext  = path.suffix.lower()
     docs: List[Document] = []
@@ -133,6 +133,20 @@ def load_document(file_path: str) -> List[Document]:
             logger.warning("PDF loader failed: %s", e)
             docs = []
         combined = " ".join(d.page_content for d in docs).strip()
+        if len(combined) < 100:
+            # Text-based PDFs can be read with pdfminer alone, without Poppler or OCR.
+            try:
+                from pdfminer.high_level import extract_text
+                text = extract_text(str(file_path)).strip()
+            except Exception as e:
+                logger.warning("pdfminer failed: %s", e)
+                text = ""
+            if len(text) >= 100:
+                docs = [Document(
+                    page_content=text,
+                    metadata={"source": str(file_path), "loader": "pdfminer"},
+                )]
+                combined = text
         if len(combined) < 100:
             logger.warning("Image-based PDF detected (%d chars) — using OCR", len(combined))
             ocr_text = extract_text_ocr(str(file_path))
@@ -170,8 +184,9 @@ def load_document(file_path: str) -> List[Document]:
     else:
         raise ValueError(f"Unsupported: {ext}. Use .pdf, .docx, .doc, .txt, .png, .jpg, .jpeg")
 
+    # Store the user-facing name so retrieval filters match the files selected in the UI.
     for doc in docs:
-        doc.metadata["filename"] = path.name
+        doc.metadata["filename"] = display_name or path.name
     logger.info("Loaded %d sections from %s", len(docs), path.name)
     return docs
 
@@ -228,8 +243,8 @@ def store_to_pgvector(chunks: List[Document]) -> PGVector:
 
 
 # â”€â”€ Main entry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-def ingest_file(file_path: str) -> dict:
-    docs   = load_document(file_path)
+def ingest_file(file_path: str, display_name: str | None = None) -> dict:
+    docs   = load_document(file_path, display_name)
     chunks = split_documents(docs)
     store_to_pgvector(chunks)
     return {

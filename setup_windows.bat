@@ -4,10 +4,10 @@ echo RAG AI Agent - Setup Script
 echo ===================================================
 
 :: Check if Python is installed
-python --version >nul 2>&1
+py -3.10 --version >nul 2>&1
 if %errorlevel% neq 0 (
     echo [ERROR] Python is not installed or not in PATH!
-    echo Please install Python (recommended 3.10 or 3.11) and try again.
+    echo Please install Python, recommended 3.10 or 3.11, and try again.
     pause
     exit /b 1
 )
@@ -20,7 +20,7 @@ if exist "rag_env" (
 )
 
 echo Creating a new virtual environment in 'rag_env'...
-python -m venv rag_env
+py -3.10 -m venv rag_env
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to create virtual environment.
     pause
